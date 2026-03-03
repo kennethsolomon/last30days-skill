@@ -351,7 +351,7 @@ def _search_tiktok(
     depth: str,
     token: str,
 ) -> tuple:
-    """Search TikTok via Apify (runs in thread).
+    """Search TikTok via ScrapeCreators (runs in thread).
 
     Returns:
         Tuple of (tiktok_items, tiktok_error)
@@ -791,7 +791,7 @@ def run_research(
                 progress.start_tiktok()
             tiktok_future = executor.submit(
                 _search_tiktok, topic, from_date, to_date, depth,
-                config.get('APIFY_API_TOKEN', ''),
+                env.get_tiktok_token(config),
             )
 
         if do_hackernews:
@@ -1160,8 +1160,8 @@ def main():
     # Auto-detect yt-dlp for YouTube search
     has_ytdlp = env.is_ytdlp_available()
 
-    # Auto-detect Apify for TikTok
-    has_apify = env.is_apify_available(config)
+    # Auto-detect ScrapeCreators/Apify for TikTok
+    has_tiktok = env.is_tiktok_available(config)
 
     # --diagnose: show source availability and exit
     if args.diagnose:
@@ -1174,7 +1174,7 @@ def main():
             "bird_authenticated": x_source_status["bird_authenticated"],
             "bird_username": x_source_status.get("bird_username"),
             "youtube": has_ytdlp,
-            "tiktok": has_apify,
+            "tiktok": has_tiktok,
             "hackernews": True,
             "polymarket": True,
             "web_search_backend": web_source,
@@ -1204,7 +1204,7 @@ def main():
         "bird_authenticated": x_source_status["bird_authenticated"],
         "bird_username": x_source_status.get("bird_username"),
         "youtube": has_ytdlp,
-        "tiktok": has_apify,
+        "tiktok": has_tiktok,
         "hackernews": True,
         "polymarket": True,
         "web_search_backend": "deferred to assistant" if args.no_native_web else web_source,
@@ -1289,7 +1289,7 @@ def main():
     search_do_hackernews = True
     search_do_polymarket = True
     search_run_youtube = has_ytdlp
-    search_run_tiktok = has_apify
+    search_run_tiktok = has_tiktok
     if args.search:
         search_sources = parse_search_flag(args.search)
         has_reddit = "reddit" in search_sources
@@ -1297,7 +1297,7 @@ def main():
         search_do_hackernews = "hn" in search_sources
         search_do_polymarket = "polymarket" in search_sources
         search_run_youtube = "youtube" in search_sources and has_ytdlp
-        search_run_tiktok = "tiktok" in search_sources and has_apify
+        search_run_tiktok = "tiktok" in search_sources and has_tiktok
         include_search_web = "web" in search_sources
         # Map to existing sources string
         if has_reddit and has_x:
@@ -1449,8 +1449,8 @@ def main():
         source_info["youtube_skip_reason"] = "yt-dlp not installed — fix: brew install yt-dlp"
     elif has_ytdlp and not report.youtube:
         source_info["youtube_skip_reason"] = "0 results (query may be too specific)"
-    if not has_apify:
-        source_info["tiktok_skip_reason"] = "No APIFY_API_TOKEN — sign up free at apify.com"
+    if not has_tiktok:
+        source_info["tiktok_skip_reason"] = "No SCRAPECREATORS_API_KEY - sign up at scrapecreators.com (100 free credits)"
     if not web_source:
         source_info["web_skip_reason"] = "assistant will use WebSearch (add BRAVE_API_KEY for native search)"
 

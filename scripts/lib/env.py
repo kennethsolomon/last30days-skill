@@ -203,6 +203,7 @@ def get_config() -> Dict[str, Any]:
         ('OPENAI_MODEL_PIN', None),
         ('XAI_MODEL_POLICY', 'latest'),
         ('XAI_MODEL_PIN', None),
+        ('SCRAPECREATORS_API_KEY', None),
         ('APIFY_API_TOKEN', None),
         ('AUTH_TOKEN', None),
         ('CT0', None),
@@ -407,13 +408,21 @@ def is_polymarket_available() -> bool:
     return True
 
 
-def is_apify_available(config: Dict[str, Any]) -> bool:
-    """Check if Apify token is configured for TikTok/social scraping.
+def is_tiktok_available(config: Dict[str, Any]) -> bool:
+    """Check if TikTok source is available (ScrapeCreators or legacy Apify).
 
-    Returns True if APIFY_API_TOKEN is set. One token covers
-    TikTok, Facebook, Instagram (all Apify-backed sources).
+    Returns True if SCRAPECREATORS_API_KEY or APIFY_API_TOKEN is set.
     """
-    return bool(config.get('APIFY_API_TOKEN'))
+    return bool(config.get('SCRAPECREATORS_API_KEY') or config.get('APIFY_API_TOKEN'))
+
+
+def get_tiktok_token(config: Dict[str, Any]) -> str:
+    """Get TikTok API token, preferring ScrapeCreators over legacy Apify."""
+    return config.get('SCRAPECREATORS_API_KEY') or config.get('APIFY_API_TOKEN') or ''
+
+
+# Backward compat alias
+is_apify_available = is_tiktok_available
 
 
 def get_x_source_status(config: Dict[str, Any]) -> Dict[str, Any]:

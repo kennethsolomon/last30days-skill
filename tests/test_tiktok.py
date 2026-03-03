@@ -58,14 +58,10 @@ class TestExtractCoreSubject(unittest.TestCase):
 
 
 class TestParseDate(unittest.TestCase):
-    """Test date parsing from Apify items."""
-
-    def test_iso_date(self):
-        item = {"createTimeISO": "2026-02-28T17:44:35.000Z"}
-        self.assertEqual(tiktok._parse_date(item), "2026-02-28")
+    """Test date parsing from ScrapeCreators items."""
 
     def test_unix_timestamp(self):
-        item = {"createTime": 1756403075}
+        item = {"create_time": 1756403075}
         result = tiktok._parse_date(item)
         self.assertIsNotNone(result)
         self.assertRegex(result, r"\d{4}-\d{2}-\d{2}")
@@ -73,6 +69,19 @@ class TestParseDate(unittest.TestCase):
     def test_no_date(self):
         item = {}
         self.assertIsNone(tiktok._parse_date(item))
+
+
+class TestCleanWebVTT(unittest.TestCase):
+    """Test WebVTT transcript cleaning."""
+
+    def test_strips_timestamps(self):
+        raw = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nHello world\n\n00:00:02.000 --> 00:00:04.000\nGoodbye"
+        result = tiktok._clean_webvtt(raw)
+        self.assertEqual(result, "Hello world Goodbye")
+
+    def test_empty_input(self):
+        self.assertEqual(tiktok._clean_webvtt(""), "")
+        self.assertEqual(tiktok._clean_webvtt(None), "")
 
 
 class TestNormalizeTikTokItems(unittest.TestCase):

@@ -1,9 +1,10 @@
-"""TikTok search via Apify clockworks/tiktok-scraper for /last30days.
+"""TikTok search via ScrapeCreators API for /last30days.
 
-Uses the Apify platform to search TikTok by keyword, extract engagement
-metrics (views, likes, comments), and optionally pull video captions.
+Uses ScrapeCreators REST API to search TikTok by keyword, extract engagement
+metrics (views, likes, comments, shares), and fetch video transcripts.
 
-Requires APIFY_API_TOKEN in config. Free tier: $5/month credits.
+Requires SCRAPECREATORS_API_KEY in config. 100 free credits, then PAYG.
+API docs: https://scrapecreators.com/docs
 """
 
 import re
@@ -11,9 +12,12 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
-from . import apify_client_wrapper
+try:
+    import requests as _requests
+except ImportError:
+    _requests = None
 
-ACTOR_ID = "clockworks/tiktok-scraper"
+SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/tiktok"
 
 # Depth configurations: how many results to fetch / captions to extract
 DEPTH_CONFIG = {
@@ -76,7 +80,7 @@ def _compute_relevance(query: str, text: str, hashtags: List[str] = None) -> flo
         combined = f"{text} {' '.join(hashtags)}"
     t_tokens = _tokenize(combined)
 
-    # Split concatenated hashtags (e.g., "claudecode" → "claude", "code")
+    # Split concatenated hashtags (e.g., "claudecode" -> "claude", "code")
     if hashtags:
         for tag in hashtags:
             tag_lower = tag.lower()
@@ -134,20 +138,20 @@ def _log(msg: str):
         sys.stderr.flush()
 
 
+def _sc_headers(token: str) -> Dict[str, str]:
+    """Build ScrapeCreators request headers."""
+    return {
+        "x-api-key": token,
+        "Content-Type": "application/json",
+    }
+
+
 def _parse_date(item: Dict[str, Any]) -> Optional[str]:
-    """Parse date from Apify TikTok item to YYYY-MM-DD.
+    """Parse date from ScrapeCreators TikTok item to YYYY-MM-DD.
 
-    Handles both createTimeISO (ISO string) and createTime (unix timestamp).
+    Handles create_time (unix timestamp).
     """
-    iso = item.get("createTimeISO")
-    if iso:
-        try:
-            dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-            return dt.strftime("%Y-%m-%d")
-        except (ValueError, TypeError):
-            pass
-
-    ts = item.get("createTime")
+    ts = item.get("create_time")
     if ts:
         try:
             dt = datetime.fromtimestamp(int(ts), tz=timezone.utc)
@@ -158,6 +162,26 @@ def _parse_date(item: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _clean_webvtt(text: str) -> str:
+    """Strip WebVTT timestamps and headers from transcript text."""
+    if not text:
+        return ""
+    lines = text.split('\n')
+    cleaned = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith('WEBVTT'):
+            continue
+        if re.match(r'^\d{2}:\d{2}', line):
+            continue
+        if '-->' in line:
+            continue
+        cleaned.append(line)
+    return ' '.join(cleaned)
+
+
 def search_tiktok(
     topic: str,
     from_date: str,
@@ -165,23 +189,23 @@ def search_tiktok(
     depth: str = "default",
     token: str = None,
 ) -> Dict[str, Any]:
-    """Search TikTok via Apify.
+    """Search TikTok via ScrapeCreators API.
 
     Args:
         topic: Search topic
         from_date: Start date (YYYY-MM-DD)
         to_date: End date (YYYY-MM-DD)
         depth: 'quick', 'default', or 'deep'
-        token: Apify API token
+        token: ScrapeCreators API key
 
     Returns:
         Dict with 'items' list and optional 'error'.
     """
     if not token:
-        return {"items": [], "error": "No APIFY_API_TOKEN configured"}
+        return {"items": [], "error": "No SCRAPECREATORS_API_KEY configured"}
 
-    if not apify_client_wrapper.is_apify_available():
-        return {"items": [], "error": "apify-client not installed (pip install apify-client)"}
+    if not _requests:
+        return {"items": [], "error": "requests library not installed"}
 
     config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     core_topic = _extract_core_subject(topic)
@@ -189,48 +213,61 @@ def search_tiktok(
     _log(f"Searching TikTok for '{core_topic}' (depth={depth}, count={config['results_per_page']})")
 
     try:
-        client = apify_client_wrapper.get_apify_client(token)
-        run_input = {
-            "searchQueries": [core_topic],
-            "resultsPerPage": config["results_per_page"],
-            "shouldDownloadSubtitles": False,
-            "shouldDownloadVideos": False,
-            "shouldDownloadCovers": False,
-        }
-        raw_items = apify_client_wrapper.run_actor_sync(
-            client, ACTOR_ID, run_input,
-            timeout_secs=120,
-            max_items=config["results_per_page"],
+        resp = _requests.get(
+            f"{SCRAPECREATORS_BASE}/search/keyword",
+            params={"query": core_topic, "sort_by": "relevance"},
+            headers=_sc_headers(token),
+            timeout=30,
         )
+        resp.raise_for_status()
+        data = resp.json()
     except Exception as e:
-        _log(f"Apify error: {e}")
+        _log(f"ScrapeCreators error: {e}")
         return {"items": [], "error": f"{type(e).__name__}: {e}"}
+
+    # Items are nested under aweme_info
+    raw_entries = data.get("search_item_list") or data.get("data") or []
+    raw_items = []
+    for entry in raw_entries:
+        if isinstance(entry, dict):
+            info = entry.get("aweme_info", entry)
+            raw_items.append(info)
+
+    # Limit to configured count
+    raw_items = raw_items[:config["results_per_page"]]
 
     # Parse items
     items = []
     for raw in raw_items:
-        video_id = str(raw.get("id", ""))
-        text = raw.get("text", "")
-        play_count = raw.get("playCount") or 0
-        digg_count = raw.get("diggCount") or 0
-        comment_count = raw.get("commentCount") or 0
-        share_count = raw.get("shareCount") or 0
-        author_meta = raw.get("authorMeta") or {}
-        author_name = author_meta.get("name", "")
-        web_url = raw.get("webVideoUrl", "")
-        hashtags_raw = raw.get("hashtags") or []
-        hashtag_names = [h.get("name", "") for h in hashtags_raw if isinstance(h, dict)]
-        duration = (raw.get("videoMeta") or {}).get("duration")
+        video_id = str(raw.get("aweme_id", ""))
+        text = raw.get("desc", "")
+        stats = raw.get("statistics") or {}
+        play_count = stats.get("play_count") or 0
+        digg_count = stats.get("digg_count") or 0
+        comment_count = stats.get("comment_count") or 0
+        share_count = stats.get("share_count") or 0
+        author = raw.get("author") or {}
+        author_name = author.get("unique_id", "")
+        share_url = raw.get("share_url", "")
+        text_extra = raw.get("text_extra") or []
+        hashtag_names = [t.get("hashtag_name", "") for t in text_extra
+                         if isinstance(t, dict) and t.get("hashtag_name")]
+        duration = (raw.get("video") or {}).get("duration")
 
         date_str = _parse_date(raw)
 
         # Compute relevance with hashtag boost
         relevance = _compute_relevance(core_topic, text, hashtag_names)
 
+        # Build URL: prefer share_url, fallback to constructed URL
+        url = share_url.split("?")[0] if share_url else ""
+        if not url and author_name and video_id:
+            url = f"https://www.tiktok.com/@{author_name}/video/{video_id}"
+
         items.append({
             "video_id": video_id,
             "text": text,
-            "url": web_url or f"https://www.tiktok.com/@{author_name}/video/{video_id}",
+            "url": url,
             "author_name": author_name,
             "date": date_str,
             "engagement": {
@@ -268,24 +305,24 @@ def fetch_captions(
     token: str,
     depth: str = "default",
 ) -> Dict[str, str]:
-    """Fetch captions for top N TikTok videos.
+    """Fetch transcripts for top N TikTok videos via ScrapeCreators.
 
     Strategy:
-    1. Primary: Use the 'text' field (video description) — always free
-    2. For top N, re-run actor with shouldDownloadSubtitles for spoken-word
+    1. Use the 'text' field (video description) as baseline caption
+    2. For top N, call /video/transcript for spoken-word captions
 
     Args:
         video_items: Items from search_tiktok()
-        token: Apify API token
+        token: ScrapeCreators API key
         depth: Depth level for caption limit
 
     Returns:
-        Dict mapping video_id → caption text (truncated to 500 words)
+        Dict mapping video_id -> caption text (truncated to 500 words)
     """
     config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     max_captions = config["max_captions"]
 
-    if not video_items or not token:
+    if not video_items or not token or not _requests:
         return {}
 
     top_items = video_items[:max_captions]
@@ -303,35 +340,33 @@ def fetch_captions(
                 text = ' '.join(words[:CAPTION_MAX_WORDS]) + '...'
             captions[vid] = text
 
-    # Second pass: try to get spoken-word subtitles for top videos
-    try:
-        urls = [item["url"] for item in top_items if item.get("url")]
-        if urls:
-            client = apify_client_wrapper.get_apify_client(token)
-            run_input = {
-                "postURLs": urls,
-                "shouldDownloadSubtitles": True,
-                "shouldDownloadVideos": False,
-                "shouldDownloadCovers": False,
-            }
-            subtitle_items = apify_client_wrapper.run_actor_sync(
-                client, ACTOR_ID, run_input,
-                timeout_secs=60,
-                max_items=max_captions,
+    # Second pass: try to get spoken-word transcripts (1 credit each)
+    for item in top_items:
+        vid = item["video_id"]
+        url = item.get("url", "")
+        if not url:
+            continue
+        try:
+            resp = _requests.get(
+                f"{SCRAPECREATORS_BASE}/video/transcript",
+                params={"url": url},
+                headers=_sc_headers(token),
+                timeout=15,
             )
-            for raw in subtitle_items:
-                vid = str(raw.get("id", ""))
-                # Check for subtitle text in the response
-                subtitle_text = raw.get("subtitleText") or raw.get("subtitles") or ""
-                if isinstance(subtitle_text, list):
-                    subtitle_text = " ".join(str(s) for s in subtitle_text)
-                if subtitle_text and vid:
-                    words = subtitle_text.split()
-                    if len(words) > CAPTION_MAX_WORDS:
-                        subtitle_text = ' '.join(words[:CAPTION_MAX_WORDS]) + '...'
-                    captions[vid] = subtitle_text  # Override text with spoken-word
-    except Exception as e:
-        _log(f"Subtitle enrichment failed (using text captions): {e}")
+            if resp.status_code == 200:
+                data = resp.json()
+                transcript = data.get("transcript")
+                if transcript:
+                    if isinstance(transcript, list):
+                        transcript = " ".join(str(s) for s in transcript)
+                    transcript = _clean_webvtt(transcript)
+                    if transcript:
+                        words = transcript.split()
+                        if len(words) > CAPTION_MAX_WORDS:
+                            transcript = ' '.join(words[:CAPTION_MAX_WORDS]) + '...'
+                        captions[vid] = transcript
+        except Exception as e:
+            _log(f"Transcript fetch failed for {vid}: {e}")
 
     got = sum(1 for v in captions.values() if v)
     _log(f"Got captions for {got}/{len(top_items)} videos")
@@ -352,7 +387,7 @@ def search_and_enrich(
         from_date: Start date (YYYY-MM-DD)
         to_date: End date (YYYY-MM-DD)
         depth: 'quick', 'default', or 'deep'
-        token: Apify API token
+        token: ScrapeCreators API key
 
     Returns:
         Dict with 'items' list. Each item has a 'caption_snippet' field.
