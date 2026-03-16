@@ -23,6 +23,7 @@ DEPTH_CONFIG = {
 
 # Module-level token cache (valid for the lifetime of a single research run)
 _cached_token: Optional[str] = None
+_session_error: Optional[str] = None
 
 
 def _log(msg: str):
@@ -40,9 +41,9 @@ def _create_session(handle: str, app_password: str) -> Optional[str]:
         app_password: App password from bsky.app/settings/app-passwords
 
     Returns:
-        Access JWT string, or None on failure.
+        Access JWT string, or None on failure. Sets _session_error on failure.
     """
-    global _cached_token
+    global _cached_token, _session_error
     if _cached_token:
         return _cached_token
 
@@ -56,12 +57,24 @@ def _create_session(handle: str, app_password: str) -> Optional[str]:
         token = response.get("accessJwt")
         if token:
             _cached_token = token
+            _session_error = None
             _log("Session created successfully")
             return token
         _log("No accessJwt in session response")
+        _session_error = "No accessJwt in session response"
+        return None
+    except http.HTTPError as e:
+        if e.status_code == 403 and e.body and "cloudflare" in e.body.lower():
+            _session_error = "Cloudflare blocked the request (403 Forbidden). This is a network-level block, not an auth issue. Try a different network or VPN."
+        elif e.status_code == 401:
+            _session_error = "Invalid credentials (401 Unauthorized). Check BSKY_HANDLE and BSKY_APP_PASSWORD."
+        else:
+            _session_error = f"Session request failed: {e}"
+        _log(f"Session creation failed: {_session_error}")
         return None
     except Exception as e:
-        _log(f"Session creation failed: {e}")
+        _session_error = f"Session request failed: {type(e).__name__}: {e}"
+        _log(f"Session creation failed: {_session_error}")
         return None
 
 
@@ -122,7 +135,8 @@ def search_bluesky(
     # Authenticate
     token = _create_session(handle, app_password)
     if not token:
-        return {"posts": [], "error": "Bluesky auth failed"}
+        error_msg = _session_error or "Bluesky session creation failed (unknown error)"
+        return {"posts": [], "error": error_msg}
 
     count = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     core_topic = _extract_core_subject(topic)
@@ -145,10 +159,12 @@ def search_bluesky(
         )
     except http.HTTPError as e:
         _log(f"Search failed: {e}")
-        return {"posts": [], "error": str(e)}
+        if e.status_code == 403 and e.body and "cloudflare" in e.body.lower():
+            return {"posts": [], "error": "Bluesky search blocked by Cloudflare (403). This is a network-level block - try a different network or VPN."}
+        return {"posts": [], "error": f"Bluesky search failed: {e}"}
     except Exception as e:
         _log(f"Search failed: {e}")
-        return {"posts": [], "error": str(e)}
+        return {"posts": [], "error": f"Bluesky search failed: {type(e).__name__}: {e}"}
 
     posts = response.get("posts", [])
     _log(f"Found {len(posts)} posts")

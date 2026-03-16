@@ -126,6 +126,7 @@ class TestCreateSession(unittest.TestCase):
         mock_request.side_effect = Exception("connection refused")
         token = bluesky._create_session("user.bsky.social", "app-pw")
         self.assertIsNone(token)
+        self.assertIn("connection refused", bluesky._session_error)
 
     @patch("lib.bluesky.http.request")
     def test_returns_none_on_missing_jwt(self, mock_request):
@@ -152,12 +153,32 @@ class TestSearchBlueskyAuth(unittest.TestCase):
         self.assertIn("not configured", result["error"])
 
     @patch("lib.bluesky.http.request")
-    def test_auth_failure_returns_error(self, mock_request):
-        mock_request.side_effect = Exception("401 Unauthorized")
+    def test_auth_failure_returns_specific_error(self, mock_request):
+        mock_request.side_effect = Exception("connection refused")
         config = {"BSKY_HANDLE": "user.bsky.social", "BSKY_APP_PASSWORD": "pw"}
         result = bluesky.search_bluesky("test", "2026-01-01", "2026-03-09", config=config)
         self.assertEqual(result["posts"], [])
-        self.assertIn("auth failed", result["error"])
+        self.assertIn("connection refused", result["error"])
+        self.assertNotIn("auth failed", result["error"])
+
+    @patch("lib.bluesky.http.request")
+    def test_cloudflare_403_returns_network_error(self, mock_request):
+        from lib.http import HTTPError
+        mock_request.side_effect = HTTPError("HTTP 403: Forbidden", 403, "<html>Cloudflare</html>")
+        config = {"BSKY_HANDLE": "user.bsky.social", "BSKY_APP_PASSWORD": "pw"}
+        result = bluesky.search_bluesky("test", "2026-01-01", "2026-03-09", config=config)
+        self.assertEqual(result["posts"], [])
+        self.assertIn("Cloudflare", result["error"])
+        self.assertIn("network", result["error"].lower())
+
+    @patch("lib.bluesky.http.request")
+    def test_401_returns_credentials_error(self, mock_request):
+        from lib.http import HTTPError
+        mock_request.side_effect = HTTPError("HTTP 401: Unauthorized", 401, "")
+        config = {"BSKY_HANDLE": "user.bsky.social", "BSKY_APP_PASSWORD": "pw"}
+        result = bluesky.search_bluesky("test", "2026-01-01", "2026-03-09", config=config)
+        self.assertEqual(result["posts"], [])
+        self.assertIn("Invalid credentials", result["error"])
 
     @patch("lib.bluesky.http.request")
     def test_successful_search_passes_bearer(self, mock_request):
