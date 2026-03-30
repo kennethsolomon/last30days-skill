@@ -1,8 +1,11 @@
 """Output rendering for last30days skill."""
 
+import html as _html_mod
 import json
 import os
+import re as _re
 import tempfile
+from datetime import datetime as _dt
 from pathlib import Path
 from typing import Optional
 
@@ -1016,3 +1019,427 @@ def write_outputs(
 def get_context_path() -> str:
     """Get path to context file."""
     return str(OUTPUT_DIR / "last30days.context.md")
+
+
+def _slug(text: str) -> str:
+    s = _re.sub(r'[^\w\s-]', '', text.lower())
+    s = _re.sub(r'\s+', '-', s).strip('-')
+    return s[:50]
+
+
+def _e(text) -> str:
+    return _html_mod.escape(str(text)) if text is not None else ""
+
+
+def _build_html(
+    report: schema.Report,
+    run_dt: str,
+    missing_keys: str,
+    source_info: dict,
+    quality: dict,
+) -> str:
+    topic = _e(report.topic)
+    date_range = f"{_e(report.range_from)} → {_e(report.range_to)}"
+    mode = _e(report.mode)
+
+    p = []
+
+    p.append(f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>last30days: {topic}</title>
+<style>
+:root{{--bg:#0f1117;--surface:#1a1d27;--border:#2a2d3a;--text:#e2e8f0;--muted:#8892a4;--accent:#6366f1;--reddit:#ff4500;--x:#1d9bf0;--youtube:#ff0000;--tiktok:#69c9d0;--instagram:#e1306c;--hn:#ff6600;--bluesky:#0085ff;--web:#10b981;--polymarket:#8b5cf6;}}
+@media(prefers-color-scheme:light){{:root{{--bg:#f8fafc;--surface:#ffffff;--border:#e2e8f0;--text:#1e293b;--muted:#64748b;}}}}
+*,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);line-height:1.6}}
+header{{background:var(--surface);border-bottom:1px solid var(--border);padding:1rem 2rem;position:sticky;top:0;z-index:100}}
+.hi{{max-width:960px;margin:0 auto;display:flex;align-items:center;gap:1.25rem}}
+.logo{{font-size:.7rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);white-space:nowrap;padding:2px 8px;border:1px solid var(--accent);border-radius:4px}}
+.hm{{flex:1;min-width:0}}
+.ht{{font-size:1.05rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+.hr{{font-size:.72rem;color:var(--muted);margin-top:1px}}
+main{{max-width:960px;margin:2rem auto;padding:0 2rem 4rem}}
+.sec{{margin-bottom:2.5rem}}
+.st{{font-size:.7rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:.75rem;display:flex;align-items:center;gap:.5rem}}
+.st::after{{content:'';flex:1;height:1px;background:var(--border)}}
+.dot{{width:8px;height:8px;border-radius:50%;flex-shrink:0}}
+.card{{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.25rem;margin-bottom:.625rem}}
+.ch{{display:flex;align-items:flex-start;gap:.625rem;margin-bottom:.375rem}}
+.cid{{font-size:.65rem;font-weight:700;color:var(--muted);font-family:monospace;white-space:nowrap;padding-top:3px}}
+.ct{{font-size:.9375rem;font-weight:500;line-height:1.4}}
+a{{color:var(--accent);text-decoration:none}}a:hover{{text-decoration:underline}}
+.cm{{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.5rem;font-size:.72rem;color:var(--muted)}}
+.pill{{background:var(--border);border-radius:4px;padding:1px 6px;white-space:nowrap}}
+.rel{{font-size:.8rem;color:var(--muted);margin-top:.5rem;font-style:italic}}
+.tc{{background:var(--bg);border-left:3px solid var(--reddit);border-radius:0 4px 4px 0;padding:.5rem .75rem;margin-top:.625rem;font-size:.8rem}}
+.ins{{margin-top:.5rem}}
+.ins-item{{font-size:.8rem;color:var(--muted);padding:.1rem 0}}
+.ins-item::before{{content:'· '}}
+.warn{{background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);border-radius:8px;padding:.75rem 1rem;font-size:.8rem;color:#fbbf24;margin-bottom:1.5rem}}
+.ss{{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.25rem}}
+.sr{{display:flex;align-items:center;gap:.5rem;padding:.175rem 0;font-size:.8rem;color:var(--muted)}}
+.ok{{color:#10b981}}.err{{color:#ef4444}}
+details summary{{font-size:.75rem;color:var(--accent);cursor:pointer;margin-top:.5rem;user-select:none}}
+.tc2{{margin-top:.5rem;font-size:.78rem;color:var(--muted);max-height:200px;overflow-y:auto;border-left:2px solid var(--border);padding-left:.75rem;white-space:pre-wrap}}
+.body-text{{font-size:.85rem;margin-top:.25rem;line-height:1.5}}
+</style>
+</head>
+<body>
+<header>
+<div class="hi">
+  <div class="logo">last30days</div>
+  <div class="hm">
+    <div class="ht">{topic}</div>
+    <div class="hr">Run {_e(run_dt)}&nbsp;&nbsp;·&nbsp;&nbsp;{mode}&nbsp;&nbsp;·&nbsp;&nbsp;{date_range}</div>
+  </div>
+</div>
+</header>
+<main>
+""")
+
+    freshness = _assess_data_freshness(report)
+    if freshness["is_sparse"]:
+        p.append(f'<div class="warn">⚠️ Limited recent data — only {freshness["total_recent"]} item(s) confirmed from the last 30 days. Results may include older content.</div>\n')
+
+    if quality and quality.get("nudge_text"):
+        p.append(f'<div class="warn">🔍 Research Coverage: {_e(str(quality.get("score_pct", "?")))}% — {_e(quality["nudge_text"])}</div>\n')
+
+    # Reddit
+    if report.reddit:
+        p.append('<div class="sec"><div class="st"><span class="dot" style="background:var(--reddit)"></span>Reddit</div>\n')
+        for item in report.reddit:
+            eng_pills = []
+            if item.engagement:
+                eng = item.engagement
+                if eng.score is not None: eng_pills.append(f"{eng.score} pts")
+                if eng.num_comments is not None: eng_pills.append(f"{eng.num_comments} comments")
+            date_str = _e(item.date) if item.date else "date unknown"
+            p.append(f'<div class="card"><div class="ch"><div class="cid">{_e(item.id)}</div><div style="flex:1">')
+            p.append(f'<div class="ct"><a href="{_e(item.url)}" target="_blank" rel="noopener">{_e(item.title)}</a></div>')
+            p.append(f'<div class="cm"><span class="pill">r/{_e(item.subreddit)}</span><span class="pill">{date_str}</span><span class="pill">score {item.score}/100</span>')
+            for ep in eng_pills:
+                p.append(f'<span class="pill">{_e(ep)}</span>')
+            p.append('</div>')
+            if item.why_relevant:
+                p.append(f'<div class="rel">{_e(item.why_relevant)}</div>')
+            if item.top_comments and item.top_comments[0].score >= 10:
+                tc = item.top_comments[0]
+                excerpt = tc.excerpt[:200] + ("..." if len(tc.excerpt) > 200 else "")
+                p.append(f'<div class="tc">💬 <strong>Top comment</strong> ({tc.score} upvotes): {_e(excerpt)}</div>')
+            if item.comment_insights:
+                p.append('<div class="ins">')
+                for insight in item.comment_insights[:3]:
+                    p.append(f'<div class="ins-item">{_e(insight)}</div>')
+                p.append('</div>')
+            p.append('</div></div></div>\n')
+        p.append('</div>\n')
+
+    # X
+    if report.x:
+        p.append('<div class="sec"><div class="st"><span class="dot" style="background:var(--x)"></span>X / Twitter</div>\n')
+        for item in report.x:
+            eng_pills = []
+            if item.engagement:
+                eng = item.engagement
+                if eng.likes is not None: eng_pills.append(f"{eng.likes} likes")
+                if eng.reposts is not None: eng_pills.append(f"{eng.reposts} reposts")
+            date_str = _e(item.date) if item.date else "date unknown"
+            text_preview = _e(item.text[:200]) + ("..." if len(item.text) > 200 else "")
+            p.append(f'<div class="card"><div class="ch"><div class="cid">{_e(item.id)}</div><div style="flex:1">')
+            p.append(f'<div class="ct"><a href="{_e(item.url)}" target="_blank" rel="noopener">@{_e(item.author_handle)}</a></div>')
+            p.append(f'<div class="body-text">{text_preview}</div>')
+            p.append(f'<div class="cm"><span class="pill">{date_str}</span><span class="pill">score {item.score}/100</span>')
+            for ep in eng_pills:
+                p.append(f'<span class="pill">{_e(ep)}</span>')
+            p.append('</div>')
+            if item.why_relevant:
+                p.append(f'<div class="rel">{_e(item.why_relevant)}</div>')
+            p.append('</div></div></div>\n')
+        p.append('</div>\n')
+
+    # YouTube
+    if report.youtube:
+        p.append('<div class="sec"><div class="st"><span class="dot" style="background:var(--youtube)"></span>YouTube</div>\n')
+        for item in report.youtube:
+            eng_pills = []
+            if item.engagement:
+                eng = item.engagement
+                if eng.views is not None: eng_pills.append(f"{eng.views:,} views")
+                if eng.likes is not None: eng_pills.append(f"{eng.likes:,} likes")
+            date_str = _e(item.date) if item.date else ""
+            p.append(f'<div class="card"><div class="ch"><div class="cid">{_e(item.id)}</div><div style="flex:1">')
+            p.append(f'<div class="ct"><a href="{_e(item.url)}" target="_blank" rel="noopener">{_e(item.title)}</a></div>')
+            p.append(f'<div class="cm"><span class="pill">{_e(item.channel_name)}</span>')
+            if date_str: p.append(f'<span class="pill">{date_str}</span>')
+            p.append(f'<span class="pill">score {item.score}/100</span>')
+            for ep in eng_pills:
+                p.append(f'<span class="pill">{_e(ep)}</span>')
+            p.append('</div>')
+            if item.transcript_highlights:
+                p.append('<div class="ins">')
+                for hl in item.transcript_highlights[:5]:
+                    p.append(f'<div class="ins-item">{_e(hl)}</div>')
+                p.append('</div>')
+            if item.transcript_snippet:
+                wc = len(item.transcript_snippet.split())
+                p.append(f'<details><summary>Full transcript ({wc} words)</summary><div class="tc2">{_e(item.transcript_snippet)}</div></details>')
+            if item.why_relevant:
+                p.append(f'<div class="rel">{_e(item.why_relevant)}</div>')
+            p.append('</div></div></div>\n')
+        p.append('</div>\n')
+
+    # TikTok
+    if report.tiktok:
+        p.append('<div class="sec"><div class="st"><span class="dot" style="background:var(--tiktok)"></span>TikTok</div>\n')
+        for item in report.tiktok:
+            eng_pills = []
+            if item.engagement:
+                eng = item.engagement
+                if eng.views is not None: eng_pills.append(f"{eng.views:,} views")
+                if eng.likes is not None: eng_pills.append(f"{eng.likes:,} likes")
+            date_str = _e(item.date) if item.date else ""
+            p.append(f'<div class="card"><div class="ch"><div class="cid">{_e(item.id)}</div><div style="flex:1">')
+            p.append(f'<div class="ct"><a href="{_e(item.url)}" target="_blank" rel="noopener">@{_e(item.author_name)}</a></div>')
+            p.append(f'<div class="body-text">{_e(item.text[:200])}</div>')
+            p.append(f'<div class="cm">')
+            if date_str: p.append(f'<span class="pill">{date_str}</span>')
+            p.append(f'<span class="pill">score {item.score}/100</span>')
+            for ep in eng_pills:
+                p.append(f'<span class="pill">{_e(ep)}</span>')
+            if item.hashtags:
+                p.append(f'<span class="pill">{_e(" ".join("#"+h for h in item.hashtags[:6]))}</span>')
+            p.append('</div>')
+            if item.why_relevant:
+                p.append(f'<div class="rel">{_e(item.why_relevant)}</div>')
+            p.append('</div></div></div>\n')
+        p.append('</div>\n')
+
+    # Instagram
+    if report.instagram:
+        p.append('<div class="sec"><div class="st"><span class="dot" style="background:var(--instagram)"></span>Instagram</div>\n')
+        for item in report.instagram:
+            eng_pills = []
+            if item.engagement:
+                eng = item.engagement
+                if eng.views is not None: eng_pills.append(f"{eng.views:,} views")
+                if eng.likes is not None: eng_pills.append(f"{eng.likes:,} likes")
+            date_str = _e(item.date) if item.date else ""
+            p.append(f'<div class="card"><div class="ch"><div class="cid">{_e(item.id)}</div><div style="flex:1">')
+            p.append(f'<div class="ct"><a href="{_e(item.url)}" target="_blank" rel="noopener">@{_e(item.author_name)}</a></div>')
+            p.append(f'<div class="body-text">{_e(item.text[:200])}</div>')
+            p.append(f'<div class="cm">')
+            if date_str: p.append(f'<span class="pill">{date_str}</span>')
+            p.append(f'<span class="pill">score {item.score}/100</span>')
+            for ep in eng_pills:
+                p.append(f'<span class="pill">{_e(ep)}</span>')
+            if item.hashtags:
+                p.append(f'<span class="pill">{_e(" ".join("#"+h for h in item.hashtags[:6]))}</span>')
+            p.append('</div>')
+            if item.why_relevant:
+                p.append(f'<div class="rel">{_e(item.why_relevant)}</div>')
+            p.append('</div></div></div>\n')
+        p.append('</div>\n')
+
+    # Hacker News
+    if report.hackernews:
+        p.append('<div class="sec"><div class="st"><span class="dot" style="background:var(--hn)"></span>Hacker News</div>\n')
+        for item in report.hackernews:
+            eng_pills = []
+            if item.engagement:
+                eng = item.engagement
+                if eng.score is not None: eng_pills.append(f"{eng.score} pts")
+                if eng.num_comments is not None: eng_pills.append(f"{eng.num_comments} comments")
+            date_str = _e(item.date) if item.date else ""
+            p.append(f'<div class="card"><div class="ch"><div class="cid">{_e(item.id)}</div><div style="flex:1">')
+            p.append(f'<div class="ct"><a href="{_e(item.hn_url)}" target="_blank" rel="noopener">{_e(item.title)}</a></div>')
+            p.append(f'<div class="cm"><span class="pill">hn/{_e(item.author)}</span>')
+            if date_str: p.append(f'<span class="pill">{date_str}</span>')
+            p.append(f'<span class="pill">score {item.score}/100</span>')
+            for ep in eng_pills:
+                p.append(f'<span class="pill">{_e(ep)}</span>')
+            p.append('</div>')
+            if item.comment_insights:
+                p.append('<div class="ins">')
+                for insight in item.comment_insights[:3]:
+                    p.append(f'<div class="ins-item">{_e(insight)}</div>')
+                p.append('</div>')
+            if item.why_relevant:
+                p.append(f'<div class="rel">{_e(item.why_relevant)}</div>')
+            p.append('</div></div></div>\n')
+        p.append('</div>\n')
+
+    # Bluesky
+    if report.bluesky:
+        p.append('<div class="sec"><div class="st"><span class="dot" style="background:var(--bluesky)"></span>Bluesky</div>\n')
+        for item in report.bluesky:
+            eng_pills = []
+            if item.engagement:
+                eng = item.engagement
+                if eng.likes is not None: eng_pills.append(f"{eng.likes} likes")
+                if eng.reposts is not None: eng_pills.append(f"{eng.reposts} reposts")
+            date_str = _e(item.date) if item.date else ""
+            p.append(f'<div class="card"><div class="ch"><div class="cid">{_e(item.id)}</div><div style="flex:1">')
+            p.append(f'<div class="ct"><a href="{_e(item.url)}" target="_blank" rel="noopener">@{_e(item.author_handle)}</a></div>')
+            if item.text:
+                p.append(f'<div class="body-text">{_e(item.text[:200])}</div>')
+            p.append(f'<div class="cm">')
+            if date_str: p.append(f'<span class="pill">{date_str}</span>')
+            p.append(f'<span class="pill">score {item.score}/100</span>')
+            for ep in eng_pills:
+                p.append(f'<span class="pill">{_e(ep)}</span>')
+            p.append('</div>')
+            if item.why_relevant:
+                p.append(f'<div class="rel">{_e(item.why_relevant)}</div>')
+            p.append('</div></div></div>\n')
+        p.append('</div>\n')
+
+    # Truth Social
+    if report.truthsocial:
+        p.append('<div class="sec"><div class="st"><span class="dot" style="background:var(--reddit)"></span>Truth Social</div>\n')
+        for item in report.truthsocial:
+            eng_pills = []
+            if item.engagement:
+                eng = item.engagement
+                if eng.likes is not None: eng_pills.append(f"{eng.likes} likes")
+                if eng.reposts is not None: eng_pills.append(f"{eng.reposts} reposts")
+            date_str = _e(item.date) if item.date else ""
+            p.append(f'<div class="card"><div class="ch"><div class="cid">{_e(item.id)}</div><div style="flex:1">')
+            p.append(f'<div class="ct"><a href="{_e(item.url)}" target="_blank" rel="noopener">@{_e(item.author_handle)}</a></div>')
+            if item.text:
+                p.append(f'<div class="body-text">{_e(item.text[:200])}</div>')
+            p.append(f'<div class="cm">')
+            if date_str: p.append(f'<span class="pill">{date_str}</span>')
+            p.append(f'<span class="pill">score {item.score}/100</span>')
+            for ep in eng_pills:
+                p.append(f'<span class="pill">{_e(ep)}</span>')
+            p.append('</div>')
+            if item.why_relevant:
+                p.append(f'<div class="rel">{_e(item.why_relevant)}</div>')
+            p.append('</div></div></div>\n')
+        p.append('</div>\n')
+
+    # Polymarket
+    if report.polymarket:
+        p.append('<div class="sec"><div class="st"><span class="dot" style="background:var(--polymarket)"></span>Polymarket</div>\n')
+        for item in report.polymarket:
+            eng_pills = []
+            if item.engagement:
+                eng = item.engagement
+                if eng.volume is not None:
+                    v = eng.volume
+                    eng_pills.append(f"${v/1_000_000:.1f}M vol" if v >= 1_000_000 else f"${v/1_000:.0f}K vol" if v >= 1_000 else f"${v:.0f} vol")
+            date_str = _e(item.date) if item.date else ""
+            outcomes_str = " | ".join(f"{n}: {pr*100:.0f}%" for n, pr in item.outcome_prices[:3]) if item.outcome_prices else ""
+            p.append(f'<div class="card"><div class="ch"><div class="cid">{_e(item.id)}</div><div style="flex:1">')
+            p.append(f'<div class="ct"><a href="{_e(item.url)}" target="_blank" rel="noopener">{_e(item.question)}</a></div>')
+            if outcomes_str:
+                p.append(f'<div style="font-size:.82rem;margin-top:.3rem;color:var(--muted)">{_e(outcomes_str)}</div>')
+            p.append(f'<div class="cm">')
+            if date_str: p.append(f'<span class="pill">{date_str}</span>')
+            p.append(f'<span class="pill">score {item.score}/100</span>')
+            for ep in eng_pills:
+                p.append(f'<span class="pill">{_e(ep)}</span>')
+            p.append('</div>')
+            if item.why_relevant:
+                p.append(f'<div class="rel">{_e(item.why_relevant)}</div>')
+            p.append('</div></div></div>\n')
+        p.append('</div>\n')
+
+    # Web
+    if report.web:
+        p.append('<div class="sec"><div class="st"><span class="dot" style="background:var(--web)"></span>Web</div>\n')
+        for item in report.web:
+            date_str = _e(item.date) if item.date else "date unknown"
+            snippet = _e(item.snippet[:150]) if item.snippet else ""
+            p.append(f'<div class="card"><div class="ch"><div class="cid">{_e(item.id)}</div><div style="flex:1">')
+            p.append(f'<div class="ct"><a href="{_e(item.url)}" target="_blank" rel="noopener">{_e(item.title)}</a></div>')
+            p.append(f'<div class="cm"><span class="pill">{_e(item.source_domain)}</span><span class="pill">{date_str}</span><span class="pill">score {item.score}/100</span></div>')
+            if snippet:
+                p.append(f'<div class="body-text" style="color:var(--muted)">{snippet}…</div>')
+            if item.why_relevant:
+                p.append(f'<div class="rel">{_e(item.why_relevant)}</div>')
+            p.append('</div></div></div>\n')
+        p.append('</div>\n')
+
+    # Source status
+    p.append('<div class="sec"><div class="st">Sources</div><div class="ss">\n')
+
+    def _sr(icon, label, text, css=""):
+        return f'<div class="sr {css}"><span>{icon}</span><span style="font-weight:600;min-width:90px">{_e(label)}</span><span>{_e(text)}</span></div>\n'
+
+    if report.reddit_error:
+        p.append(_sr("❌", "Reddit", report.reddit_error, "err"))
+    elif report.reddit:
+        p.append(_sr("✅", "Reddit", f"{len(report.reddit)} threads", "ok"))
+    if report.x_error:
+        p.append(_sr("❌", "X", report.x_error, "err"))
+    elif report.x:
+        p.append(_sr("✅", "X", f"{len(report.x)} posts", "ok"))
+    if report.youtube_error:
+        p.append(_sr("❌", "YouTube", report.youtube_error, "err"))
+    elif report.youtube:
+        wt = sum(1 for v in report.youtube if getattr(v, 'transcript_snippet', None))
+        p.append(_sr("✅", "YouTube", f"{len(report.youtube)} videos ({wt} with transcripts)", "ok"))
+    if report.tiktok_error:
+        p.append(_sr("❌", "TikTok", report.tiktok_error, "err"))
+    elif report.tiktok:
+        p.append(_sr("✅", "TikTok", f"{len(report.tiktok)} videos", "ok"))
+    if report.instagram_error:
+        p.append(_sr("❌", "Instagram", report.instagram_error, "err"))
+    elif report.instagram:
+        p.append(_sr("✅", "Instagram", f"{len(report.instagram)} reels", "ok"))
+    if report.hackernews_error:
+        p.append(_sr("❌", "Hacker News", report.hackernews_error, "err"))
+    elif report.hackernews:
+        p.append(_sr("✅", "Hacker News", f"{len(report.hackernews)} stories", "ok"))
+    if report.bluesky_error:
+        p.append(_sr("❌", "Bluesky", report.bluesky_error, "err"))
+    elif report.bluesky:
+        p.append(_sr("✅", "Bluesky", f"{len(report.bluesky)} posts", "ok"))
+    if report.truthsocial_error:
+        p.append(_sr("❌", "Truth Social", report.truthsocial_error, "err"))
+    elif report.truthsocial:
+        p.append(_sr("✅", "Truth Social", f"{len(report.truthsocial)} posts", "ok"))
+    if report.polymarket_error:
+        p.append(_sr("❌", "Polymarket", report.polymarket_error, "err"))
+    elif report.polymarket:
+        p.append(_sr("✅", "Polymarket", f"{len(report.polymarket)} markets", "ok"))
+    if report.web_error:
+        p.append(_sr("❌", "Web", report.web_error, "err"))
+    elif report.web:
+        p.append(_sr("✅", "Web", f"{len(report.web)} pages", "ok"))
+    else:
+        p.append(_sr("⚡", "Web", source_info.get("web_skip_reason", "assistant will use WebSearch")))
+
+    p.append('</div></div>\n')
+    p.append('</main>\n</body>\n</html>')
+    return "".join(p)
+
+
+def save_html(
+    report: schema.Report,
+    missing_keys: str = "none",
+    source_info: dict = None,
+    quality: dict = None,
+) -> Path:
+    """Save report as a styled HTML file. Returns the saved path.
+
+    Filename: {topic-slug}_{YYYY-MM-DD_HH-MM-SS}.html
+    """
+    ensure_output_dir()
+    if source_info is None:
+        source_info = {}
+
+    slug = _slug(report.topic)
+    ts = _dt.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_dt = _dt.now().strftime("%B %d, %Y at %I:%M %p")
+    out_path = OUTPUT_DIR / f"{slug}_{ts}.html"
+
+    html_content = _build_html(report, run_dt, missing_keys, source_info, quality)
+    with open(out_path, 'w', encoding='utf-8') as f:
+        f.write(html_content)
+
+    return out_path

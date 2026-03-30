@@ -7,7 +7,7 @@ Usage:
 
 Options:
     --mock              Use fixtures instead of real API calls
-    --emit=MODE         Output mode: compact|json|md|context|path (default: compact)
+    --emit=MODE         Output mode: compact|json|md|context|path|html (default: compact)
     --sources=MODE      Source selection: auto|reddit|x|both (default: auto)
     --quick             Faster research with fewer sources (8-12 each)
     --deep              Comprehensive research with more sources (50-70 Reddit, 40-60 X)
@@ -1425,7 +1425,7 @@ def main():
     parser.add_argument("--mock", action="store_true", help="Use fixtures")
     parser.add_argument(
         "--emit",
-        choices=["compact", "json", "md", "context", "path"],
+        choices=["compact", "json", "md", "context", "path", "html"],
         default="compact",
         help="Output mode",
     )
@@ -2102,6 +2102,11 @@ def output_result(
         print(report.context_snippet_md)
     elif emit_mode == "path":
         print(render.get_context_path())
+    elif emit_mode == "html":
+        import subprocess
+        html_path = render.save_html(report, missing_keys=missing_keys, source_info=source_info, quality=quality)
+        subprocess.Popen(["open", str(html_path)])
+        print(f"[html] Saved: {html_path}")
 
     # Output WebSearch instructions if needed
     if web_needed:
